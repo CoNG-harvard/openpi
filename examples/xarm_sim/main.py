@@ -44,11 +44,6 @@ def main() -> None:
         while True:
             obs = env.get_observation()
             print(f"observation keys: {list(obs.keys())}")
-            images = obs.get("images", {})
-            print(f"image keys: {list(images.keys())}")
-            for name, image in images.items():
-                shape = getattr(image, "shape", None)
-                print(f"image {name} shape: {shape}")
             state = env.get_joint_positions()
             if state is None:
                 env.step(render=not cfg.headless)
