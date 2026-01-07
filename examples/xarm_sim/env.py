@@ -68,9 +68,6 @@ class EnvConfig:
     xarm_placeholder_size: float = 0.1
     xarm_placeholder_name: str = "xarm_placeholder"
     xarm_placeholder_child_name: str = "Placeholder"
-    joint_step: float = 0.02
-    joint_target_limit: float = 1.0
-    initial_direction: float = 1.0
 
 
 class XArmIsaacEnvironment(_environment.Environment):

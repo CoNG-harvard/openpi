@@ -1,29 +1,25 @@
 import argparse
+import logging
+from collections import deque
+
+import numpy as np
+from openpi_client import image_tools
+from openpi_client import websocket_client_policy as _websocket_client_policy
 
 from env import EnvConfig, XArmIsaacEnvironment
 
 
 def parse_args() -> argparse.Namespace:
-    defaults = EnvConfig()
     parser = argparse.ArgumentParser(description="Isaac Sim XArm environment runner")
     parser.add_argument("--headless", action="store_true", help="Run without a viewer")
+    parser.add_argument("--host", default="0.0.0.0", help="Policy server host")
+    parser.add_argument("--port", type=int, default=8000, help="Policy server port")
+    parser.add_argument("--prompt", default="do something", help="Prompt to send with observations")
     parser.add_argument(
-        "--joint-step",
-        type=float,
-        default=defaults.joint_step,
-        help="Increment per step for joint targets",
-    )
-    parser.add_argument(
-        "--joint-limit",
-        type=float,
-        default=defaults.joint_target_limit,
-        help="Absolute joint target limit",
-    )
-    parser.add_argument(
-        "--initial-direction",
-        type=float,
-        default=defaults.initial_direction,
-        help="Initial joint target direction",
+        "--image-size",
+        type=int,
+        default=224,
+        help="Resize images before policy inference",
     )
     return parser.parse_args()
 
@@ -32,33 +28,74 @@ def main() -> None:
     args = parse_args()
     cfg = EnvConfig(
         headless=args.headless,
-        joint_step=args.joint_step,
-        joint_target_limit=args.joint_limit,
-        initial_direction=args.initial_direction,
     )
     env = XArmIsaacEnvironment(cfg)
     env.reset()
 
-    direction = cfg.initial_direction
+    policy = _websocket_client_policy.WebsocketClientPolicy(
+        host=args.host,
+        port=args.port
+    )
+    logging.info("Server metadata: %s", policy.get_server_metadata())
+
+    action_queue: deque[np.ndarray] = deque()
+
     try:
         while True:
             obs = env.get_observation()
-            print(f"observation keys: {list(obs.keys())}")
-            state = env.get_joint_positions()
-            if state is None:
+            if _observation_missing_images(obs):
                 env.step(render=not cfg.headless)
                 continue
 
-            next_targets = state + direction * cfg.joint_step
-            if (next_targets > cfg.joint_target_limit).any() or (next_targets < -cfg.joint_target_limit).any():
-                direction *= -1.0
-                next_targets = state + direction * cfg.joint_step
-            env.apply_action({"actions": next_targets})
+            if not action_queue:
+                request = _build_policy_observation(obs, args.prompt, args.image_size)
+                result = policy.infer(request)
+                actions = np.asarray(result.get("actions"))
+                if actions.ndim == 1:
+                    action_queue.append(actions)
+                else:
+                    for action in actions:
+                        action_queue.append(action)
+
+            env.apply_action(_action_to_env(action_queue.popleft()))
     except KeyboardInterrupt:
         pass
     finally:
         env.close()
 
 
+def _observation_missing_images(obs: dict) -> bool:
+    return (
+        obs.get("wrist_image_left") is None
+        or obs.get("exterior_image_1_left") is None
+        or obs.get("exterior_image_2_left") is None
+    )
+
+
+def _build_policy_observation(obs: dict, prompt: str, image_size: int) -> dict:
+    return {
+        "observation/wrist_image_left": image_tools.convert_to_uint8(
+            image_tools.resize_with_pad(obs["wrist_image_left"], image_size, image_size)
+        ),
+        "observation/exterior_image_1_left": image_tools.convert_to_uint8(
+            image_tools.resize_with_pad(obs["exterior_image_1_left"], image_size, image_size)
+        ),
+        "observation/exterior_image_2_left": image_tools.convert_to_uint8(
+            image_tools.resize_with_pad(obs["exterior_image_2_left"], image_size, image_size)
+        ),
+        "observation/joint_position": obs["joint_position"],
+        "observation/gripper_position": obs["gripper_position"],
+        "prompt": prompt,
+    }
+
+
+def _action_to_env(action: np.ndarray) -> dict:
+    action = np.asarray(action, dtype=np.float64).reshape(-1)
+    if action.size < 7:
+        raise ValueError(f"Expected at least 7 action dims, got {action.size}")
+    return {"actions": action[:7]}
+
+
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     main()
