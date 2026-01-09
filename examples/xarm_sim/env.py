@@ -11,6 +11,7 @@ from typing_extensions import override
 @dataclass
 class EnvConfig:
     headless: bool = True
+    enable_webrtc: bool = True
     physics_dt: float = 1.0 / 60.0
     rendering_dt: float = 1.0 / 60.0
     stage_units_in_meters: float = 1.0
@@ -76,7 +77,12 @@ class XArmIsaacEnvironment(_environment.Environment):
         self._last_action_dict = self._default_action_dict()
         from isaacsim import SimulationApp
 
-        self._simulation_app = SimulationApp({"headless": cfg.headless})
+        self._simulation_app = SimulationApp(
+            {
+                "headless": cfg.headless,
+                "enable_webrtc": cfg.enable_webrtc,
+            }
+        )
 
         from omni.isaac.core import World
         from omni.isaac.core.objects import FixedCuboid, GroundPlane

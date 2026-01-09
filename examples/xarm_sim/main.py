@@ -15,6 +15,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0", help="Policy server host")
     parser.add_argument("--port", type=int, default=8000, help="Policy server port")
     parser.add_argument("--prompt", default="pick the red cube", help="Prompt to send with observations")
+    parser.add_argument("--webrtc", dest="webrtc", action="store_true", help="Enable WebRTC streaming")
+    parser.add_argument("--no-webrtc", dest="webrtc", action="store_false", help="Disable WebRTC streaming")
+    parser.set_defaults(webrtc=True)
     parser.add_argument(
         "--open-loop-horizon",
         type=int,
@@ -28,6 +31,7 @@ def main() -> None:
     args = parse_args()
     cfg = EnvConfig(
         headless=args.headless,
+        enable_webrtc=args.webrtc,
     )
     env = XArmIsaacEnvironment(cfg)
     env.reset()
