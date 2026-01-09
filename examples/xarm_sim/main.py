@@ -14,12 +14,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", action="store_true", help="Run without a viewer")
     parser.add_argument("--host", default="0.0.0.0", help="Policy server host")
     parser.add_argument("--port", type=int, default=8000, help="Policy server port")
-    parser.add_argument("--prompt", default="do something", help="Prompt to send with observations")
+    parser.add_argument("--prompt", default="pick the red cube", help="Prompt to send with observations")
     parser.add_argument(
-        "--image-size",
+        "--open-loop-horizon",
         type=int,
-        default=224,
-        help="Resize images before policy inference",
+        default=8,
+        help="Number of actions to execute per policy inference",
     )
     return parser.parse_args()
 
@@ -32,68 +32,56 @@ def main() -> None:
     env = XArmIsaacEnvironment(cfg)
     env.reset()
 
-    policy = _websocket_client_policy.WebsocketClientPolicy(
-        host=args.host,
-        port=args.port
-    )
-    logging.info("Server metadata: %s", policy.get_server_metadata())
+    policy = _websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port)
 
     action_queue: deque[np.ndarray] = deque()
+    actions_from_chunk_completed = 0
 
-    try:
-        while True:
-            obs = env.get_observation()
-            if _observation_missing_images(obs):
-                env.step(render=not cfg.headless)
-                continue
+    for _ in range(600):
+        obs = env.get_observation()
+        if (
+            obs.get("wrist_image_left") is None
+            or obs.get("exterior_image_1_left") is None
+        ):
+            env.step()
+            continue
 
-            if not action_queue:
-                request = _build_policy_observation(obs, args.prompt, args.image_size)
-                result = policy.infer(request)
-                actions = np.asarray(result.get("actions"))
-                if actions.ndim == 1:
-                    action_queue.append(actions)
-                else:
-                    for action in actions:
-                        action_queue.append(action)
+        if not action_queue or actions_from_chunk_completed >= args.open_loop_horizon:
+            actions_from_chunk_completed = 0
+            action_queue.clear()
+            request = _build_policy_observation(obs, args.prompt)
+            result = policy.infer(request)
+            actions = np.asarray(result.get("actions"))
+            if actions.ndim == 1:
+                assert actions.shape[0] == 8, f"Expected 8 action dims, got {actions.shape}"
+            elif actions.ndim == 2:
+                assert actions.shape[1] == 8, f"Expected 8 action dims, got {actions.shape}"
+            if actions.ndim == 1:
+                action_queue.append(actions)
+            else:
+                for action in actions:
+                    action_queue.append(action)
 
-            env.apply_action(_action_to_env(action_queue.popleft()))
-    except KeyboardInterrupt:
-        pass
-    finally:
-        env.close()
+        action = np.asarray(action_queue.popleft(), dtype=np.float32).reshape(-1)
+        if action.size:
+            action[-1] = 1.0 if action[-1] > 0.5 else 0.0
+        action = np.clip(action, -1.0, 1.0)
+        env.apply_action({"actions": action})
+        actions_from_chunk_completed += 1
+
+    env.close()
 
 
-def _observation_missing_images(obs: dict) -> bool:
-    return (
-        obs.get("wrist_image_left") is None
-        or obs.get("exterior_image_1_left") is None
-        or obs.get("exterior_image_2_left") is None
-    )
-
-
-def _build_policy_observation(obs: dict, prompt: str, image_size: int) -> dict:
+def _build_policy_observation(obs: dict, prompt: str) -> dict:
+    wrist = image_tools.resize_with_pad(obs["wrist_image_left"], 224, 224)
+    exterior = image_tools.resize_with_pad(obs["exterior_image_1_left"], 224, 224)
     return {
-        "observation/wrist_image_left": image_tools.convert_to_uint8(
-            image_tools.resize_with_pad(obs["wrist_image_left"], image_size, image_size)
-        ),
-        "observation/exterior_image_1_left": image_tools.convert_to_uint8(
-            image_tools.resize_with_pad(obs["exterior_image_1_left"], image_size, image_size)
-        ),
-        "observation/exterior_image_2_left": image_tools.convert_to_uint8(
-            image_tools.resize_with_pad(obs["exterior_image_2_left"], image_size, image_size)
-        ),
+        "observation/wrist_image_left": wrist,
+        "observation/exterior_image_1_left": exterior,
         "observation/joint_position": obs["joint_position"],
         "observation/gripper_position": obs["gripper_position"],
         "prompt": prompt,
     }
-
-
-def _action_to_env(action: np.ndarray) -> dict:
-    action = np.asarray(action, dtype=np.float64).reshape(-1)
-    if action.size < 7:
-        raise ValueError(f"Expected at least 7 action dims, got {action.size}")
-    return {"actions": action[:7]}
 
 
 if __name__ == "__main__":
