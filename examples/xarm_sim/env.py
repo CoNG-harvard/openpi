@@ -61,6 +61,7 @@ class EnvConfig:
     xarm_placeholder_name: str = "xarm_placeholder"
     xarm_placeholder_child_name: str = "Placeholder"
     action_delta_scale: float = 0.05
+    velocity_integration_dt: float = 0.1  # Typical for 10Hz policy loops
 
 
 class XArmIsaacEnvironment(_environment.Environment):
@@ -77,12 +78,16 @@ class XArmIsaacEnvironment(_environment.Environment):
         self._last_action_dict = self._default_action_dict()
         from isaacsim import SimulationApp
 
-        self._simulation_app = SimulationApp(
-            {
-                "headless": cfg.headless,
-                "enable_webrtc": cfg.enable_webrtc,
-            }
-        )
+        launch_config = {"headless": cfg.headless}
+        if cfg.enable_webrtc:
+            # hide_ui=False is required for the video capture process to function correctly.
+            launch_config["hide_ui"] = False
+
+        self._simulation_app = SimulationApp(launch_config)
+
+        if cfg.enable_webrtc:
+            import omni.kit.app
+            omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate("omni.kit.livestream.webrtc", True)
 
         from omni.isaac.core import World
         from omni.isaac.core.objects import FixedCuboid, GroundPlane
@@ -233,58 +238,48 @@ class XArmIsaacEnvironment(_environment.Environment):
 
     @override
     def apply_action(self, action: dict) -> None:
-        if self._xarm is not None:
-            arm_command = None
-            gripper_command = None
+        if self._xarm is None:
+            return
+
+        # 1. Extract raw targets
+        targets = action.get("actions")
+        if targets is None and "action_dict" in action:
+            targets = action["action_dict"].get("joint_position")
+        
+        if targets is None:
+            return
             
-            if "action_dict" in action:
-                action_dict = action.get("action_dict") or {}
-                # self._last_action_dict = self._normalize_action_dict(action_dict)
-                joint_position = action_dict.get("joint_position")
-                gripper_position = action_dict.get("gripper_position")
-                
-                if joint_position is not None and np.asarray(joint_position).size:
-                    arm_command = np.asarray(joint_position, dtype=np.float64)
-                    self._last_action = arm_command
-                if gripper_position is not None and np.asarray(gripper_position).size:
-                    gripper_command = np.asarray(gripper_position, dtype=np.float64)
-            elif "actions" in action:
-                # Handle legacy/simpler actions key if needed, or assume it maps to position
-                targets = np.asarray(action["actions"], dtype=np.float64)
-                self._last_action = targets
-                arm_command, gripper_command = self._split_action(targets)
+        targets = np.asarray(targets, dtype=np.float64).flatten()
+        self._last_action = targets
 
-            if arm_command is not None or gripper_command is not None:
-                current = self.get_joint_positions()
-                if current is not None and current.size:
-                    self._dof_count = int(current.size)
-                
-                # Construct full target vector
-                current_full = (
-                    np.asarray(current, dtype=np.float64).reshape(-1)
-                    if current is not None
-                    else np.zeros(self._dof_count, dtype=np.float64)
-                )
-                
-                position_targets = current_full.copy()
-                
-                # Apply arm command (first 7 joints)
-                if arm_command is not None:
-                    arm_command = arm_command.reshape(-1)
-                    arm_indices = self._arm_dof_indices
-                    count = min(len(arm_indices), arm_command.size)
-                    position_targets[np.array(arm_indices[:count], dtype=np.int64)] = arm_command[:count]
-                    
-                # Apply gripper command
-                if gripper_command is not None:
-                    gripper_command = gripper_command.reshape(-1)
-                    gripper_indices = self._gripper_dof_indices
-                    if gripper_indices and gripper_command.size:
-                         # Simplified gripper mapping: Apply scalar to all gripper joints
-                         val = gripper_command[0]
-                         position_targets[np.array(gripper_indices, dtype=np.int64)] = val
+        # 2. Get current state for integration
+        current_full = self.get_joint_positions()
+        if current_full is None:
+            current_full = np.zeros(self._dof_count, dtype=np.float64)
+            
+        position_targets = current_full.copy()
 
-                self._set_joint_position_targets(position_targets)
+        # 3. Split targets based on indices
+        arm_v, gripper_p = self._split_action(targets)
+
+        # 4. Integrate Velocities for Arm
+        if arm_v is not None:
+            # Match provided velocities to arm joints
+            idx = np.array(self._arm_dof_indices[:arm_v.size], dtype=np.int64)
+            position_targets[idx] += arm_v[:idx.size] * self.cfg.velocity_integration_dt
+
+        # 5. Apply Absolute Positions for Gripper
+        if gripper_p is not None:
+            idx = np.array(self._gripper_dof_indices, dtype=np.int64)
+            if gripper_p.size == 1:
+                # DROID case: broadcast 1 scalar to all gripper DOFs
+                position_targets[idx] = gripper_p[0]
+            else:
+                # Multi-DOF gripper case: use as many as provided
+                count = min(len(idx), gripper_p.size)
+                position_targets[idx[:count]] = gripper_p[:count]
+
+        self._set_joint_position_targets(position_targets)
         render = (not self.cfg.headless) or (self._wrist_camera is not None)
         self._world.step(render=render)
         self._step_count += 1
@@ -397,45 +392,33 @@ class XArmIsaacEnvironment(_environment.Environment):
 
     def _infer_dof_groups(self, dof_names: list[str]) -> tuple[list[int], list[int]]:
         if not dof_names:
-            return list(range(7)), list(range(7, max(self._dof_count, 7)))
+            return [], []
         lower = [name.lower() for name in dof_names]
         gripper_keywords = ("gripper", "finger", "knuckle", "pad", "tip", "mimic", "drive")
         gripper_indices = [i for i, name in enumerate(lower) if any(k in name for k in gripper_keywords)]
         arm_indices = [i for i in range(len(lower)) if i not in gripper_indices]
-        if len(arm_indices) >= 7:
-            arm_indices = arm_indices[:7]
-        if not gripper_indices and len(lower) > len(arm_indices):
-            gripper_indices = list(range(len(arm_indices), len(lower)))
         return arm_indices, gripper_indices
 
     def _split_action(self, action: np.ndarray) -> tuple[np.ndarray | None, np.ndarray | None]:
-        action = np.asarray(action, dtype=np.float64).reshape(-1)
+        action = np.asarray(action, dtype=np.float64).flatten()
         if not action.size:
             return None, None
+        
         arm_count = len(self._arm_dof_indices)
-        gripper_count = len(self._gripper_dof_indices)
-        if arm_count and action.size == arm_count + 1:
-            return action[:arm_count], action[arm_count:arm_count + 1]
-        if arm_count and gripper_count and action.size == arm_count + gripper_count:
+        
+        # Priority 1: Exact match with arm + gripper_count
+        if action.size == arm_count + len(self._gripper_dof_indices):
             return action[:arm_count], action[arm_count:]
-        if action.size >= arm_count and arm_count:
-            return action[:arm_count], None
+            
+        # Priority 2: Standard DROID match [arm + 1]
+        if action.size == arm_count + 1:
+            return action[:arm_count], action[arm_count:]
+            
+        # Fallback: Treat as much as possible as arm, rest as gripper
+        if action.size >= arm_count:
+             return action[:arm_count], action[arm_count:] if action.size > arm_count else None
+             
         return action, None
-
-    def _expand_velocity_targets(self, arm_command: np.ndarray, current_full: np.ndarray) -> np.ndarray:
-        velocities = np.zeros_like(current_full, dtype=np.float32)
-        arm_command = np.asarray(arm_command, dtype=np.float32).reshape(-1)
-        expected = int(current_full.size)
-        if arm_command.size == expected:
-            return arm_command
-        arm_indices = self._arm_dof_indices
-        if arm_indices:
-            count = min(len(arm_indices), arm_command.size)
-            velocities[np.array(arm_indices[:count], dtype=np.int64)] = arm_command[:count]
-            return velocities
-        count = min(expected, arm_command.size)
-        velocities[:count] = arm_command[:count]
-        return velocities
 
     def _expand_gripper_targets(self, gripper_command: np.ndarray, current_full: np.ndarray) -> np.ndarray | None:
         if not self._gripper_dof_indices:
