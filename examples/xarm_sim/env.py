@@ -236,70 +236,55 @@ class XArmIsaacEnvironment(_environment.Environment):
         if self._xarm is not None:
             arm_command = None
             gripper_command = None
-            use_velocity = False
+            
             if "action_dict" in action:
                 action_dict = action.get("action_dict") or {}
-                self._last_action_dict = self._normalize_action_dict(action_dict)
-                joint_velocity = self._last_action_dict.get("joint_velocity")
-                gripper_position = self._last_action_dict.get("gripper_position")
-                joint_position = self._last_action_dict.get("joint_position")
-                if joint_velocity is not None and np.asarray(joint_velocity).size:
-                    arm_command = joint_velocity
-                    self._last_action = np.asarray(joint_velocity, dtype=np.float64)
-                    use_velocity = True
-                elif joint_position is not None and np.asarray(joint_position).size:
-                    logging.warning(
-                        "Received joint_position in action_dict; treating as joint_velocity to match DROID semantics."
-                    )
-                    arm_command = joint_position
-                    self._last_action = np.asarray(joint_position, dtype=np.float64)
-                    use_velocity = True
+                # self._last_action_dict = self._normalize_action_dict(action_dict)
+                joint_position = action_dict.get("joint_position")
+                gripper_position = action_dict.get("gripper_position")
+                
+                if joint_position is not None and np.asarray(joint_position).size:
+                    arm_command = np.asarray(joint_position, dtype=np.float64)
+                    self._last_action = arm_command
                 if gripper_position is not None and np.asarray(gripper_position).size:
-                    gripper_command = gripper_position
-            elif "action" in action:
-                self._last_action = np.asarray(action["action"], dtype=np.float64)
-                arm_command, gripper_command = self._split_action(self._last_action)
-                self._last_action_dict = self._normalize_action_dict(
-                    {"joint_velocity": arm_command, "gripper_position": gripper_command}
-                )
-                use_velocity = True
+                    gripper_command = np.asarray(gripper_position, dtype=np.float64)
             elif "actions" in action:
+                # Handle legacy/simpler actions key if needed, or assume it maps to position
                 targets = np.asarray(action["actions"], dtype=np.float64)
                 self._last_action = targets
                 arm_command, gripper_command = self._split_action(targets)
-                self._last_action_dict = self._normalize_action_dict(
-                    {"joint_velocity": arm_command, "gripper_position": gripper_command}
-                )
-                use_velocity = True
 
             if arm_command is not None or gripper_command is not None:
                 current = self.get_joint_positions()
                 if current is not None and current.size:
                     self._dof_count = int(current.size)
-                expected = self._dof_count
+                
+                # Construct full target vector
                 current_full = (
-                    np.asarray(current, dtype=np.float32).reshape(-1)
-                    if current is not None and current.size == expected
-                    else np.zeros(expected, dtype=np.float32)
+                    np.asarray(current, dtype=np.float64).reshape(-1)
+                    if current is not None
+                    else np.zeros(self._dof_count, dtype=np.float64)
                 )
-                velocity_targets = None
-                if use_velocity and arm_command is not None:
-                    velocity_targets = self._expand_velocity_targets(arm_command, current_full)
+                
+                position_targets = current_full.copy()
+                
+                # Apply arm command (first 7 joints)
+                if arm_command is not None:
+                    arm_command = arm_command.reshape(-1)
+                    arm_indices = self._arm_dof_indices
+                    count = min(len(arm_indices), arm_command.size)
+                    position_targets[np.array(arm_indices[:count], dtype=np.int64)] = arm_command[:count]
+                    
+                # Apply gripper command
                 if gripper_command is not None:
-                    dt = float(self.cfg.physics_dt)
-                    base_positions = current_full
-                    if velocity_targets is not None:
-                        base_positions = current_full + velocity_targets * dt
-                    gripper_targets = self._expand_gripper_targets(gripper_command, base_positions)
-                    if gripper_targets is not None:
-                        self._set_joint_position_targets(gripper_targets)
-                elif velocity_targets is not None:
-                    if hasattr(self._xarm, "set_joint_velocity_targets"):
-                        self._xarm.set_joint_velocity_targets(velocity_targets)
-                    else:
-                        dt = float(self.cfg.physics_dt)
-                        position_targets = current_full + velocity_targets * dt
-                        self._set_joint_position_targets(position_targets)
+                    gripper_command = gripper_command.reshape(-1)
+                    gripper_indices = self._gripper_dof_indices
+                    if gripper_indices and gripper_command.size:
+                         # Simplified gripper mapping: Apply scalar to all gripper joints
+                         val = gripper_command[0]
+                         position_targets[np.array(gripper_indices, dtype=np.int64)] = val
+
+                self._set_joint_position_targets(position_targets)
         render = (not self.cfg.headless) or (self._wrist_camera is not None)
         self._world.step(render=render)
         self._step_count += 1
