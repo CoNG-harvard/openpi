@@ -25,6 +25,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use a random oscillating policy instead of the policy server",
     )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=1,
+        help="How many actions to execute from a predicted action chunk before querying policy server again",
+    )
     return parser.parse_args()
 
 
@@ -82,6 +88,10 @@ def main() -> None:
         # Create a single window for both cameras
         cv2.namedWindow("Robot Cameras", cv2.WINDOW_NORMAL)
 
+    # Rollout parameters
+    actions_from_chunk_completed = 0
+    pred_action_chunk = None
+
     try:
         while True:
             # Ensure rendering happens before capturing images
@@ -126,12 +136,21 @@ def main() -> None:
                 cv2.imshow("Robot Cameras", combined)
                 cv2.waitKey(1)  # Refresh display
 
-            request = _build_policy_observation(obs, args.prompt)
-            result = policy.infer(request)
-            actions = result.get("actions")
-            
-            # actions is expected to be a list of arrays [r0_action, r1_action]
-            env.apply_action({"actions": actions})
+            if args.random_policy:
+                request = _build_policy_observation(obs, args.prompt)
+                result = policy.infer(request)
+                action = result.get("actions") # List of arrays
+            else:
+                if actions_from_chunk_completed == 0 or actions_from_chunk_completed >= args.horizon:
+                    actions_from_chunk_completed = 0
+                    request = _build_policy_observation(obs, args.prompt)
+                    # this usually returns action chunk [horizon, action_dim]
+                    pred_action_chunk = np.asarray(policy.infer(request)["actions"])
+                
+                action = pred_action_chunk[actions_from_chunk_completed]
+                actions_from_chunk_completed += 1
+
+            env.apply_action({"actions": action})
             
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt received, stopping simulation.")
