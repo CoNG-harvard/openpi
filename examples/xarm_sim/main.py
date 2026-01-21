@@ -29,26 +29,35 @@ def parse_args() -> argparse.Namespace:
 
 
 class OscillatingPolicy:
-    def __init__(self):
-        self.direction = np.ones(7)
+    def __init__(self, num_robots: int = 2):
+        self.num_robots = num_robots
+        self.directions = [np.ones(7) for _ in range(num_robots)]
         self.joint_step = 0.05
         self.joint_target_limit = 1.0
         self.gripper_val = 1.0
 
     def infer(self, request: dict) -> dict:
-        current_joints = np.array(request["observation/joint_position"][:7])
-        state = current_joints.copy()
-        
-        # Check limits based on current tracked state
-        next_pos = state + self.direction * self.joint_step
-        if (next_pos > self.joint_target_limit).any() or (next_pos < -self.joint_target_limit).any():
-            self.direction *= -1.0
-        
-        velocity = self.direction * self.joint_step
-        # Action consists of [v1, v2, ..., v7, gripper_pos]
-        action = np.concatenate([velocity, [self.gripper_val]])
+        actions = []
+        for i in range(self.num_robots):
+            joint_key = f"observation/robot{i}_joint_position"
+            if joint_key not in request:
+                # Fallback to robot 0 if only one set is present
+                joint_key = "observation/joint_position"
             
-        return {"actions": action}
+            current_joints = np.array(request[joint_key][:7])
+            state = current_joints.copy()
+            
+            # Check limits
+            next_pos = state + self.directions[i] * self.joint_step
+            if (next_pos > self.joint_target_limit).any() or (next_pos < -self.joint_target_limit).any():
+                self.directions[i] *= -1.0
+            
+            velocity = self.directions[i] * self.joint_step
+            # Action consists of [v1, v2, ..., v7, gripper_pos]
+            action = np.concatenate([velocity, [self.gripper_val]])
+            actions.append(action)
+            
+        return {"actions": actions}
 
 
 def main() -> None:
@@ -64,7 +73,7 @@ def main() -> None:
 
     if args.random_policy:
         logging.info("Using OscillatingPolicy")
-        policy = OscillatingPolicy()
+        policy = OscillatingPolicy(num_robots=2)
     else:
         logging.info(f"Connecting to policy server at {args.host}:{args.port}")
         policy = _websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port)
@@ -80,27 +89,38 @@ def main() -> None:
             
             obs = env.get_observation()
             if (
-                obs.get("wrist_image_left") is None
+                obs.get("robot0_wrist_image_left") is None
+                or obs.get("robot1_wrist_image_left") is None
                 or obs.get("exterior_image_1_left") is None
             ):
                 continue
             
             # Get images
-            wrist_img = obs["wrist_image_left"]
+            robot0_wrist = obs["robot0_wrist_image_left"]
+            robot1_wrist = obs["robot1_wrist_image_left"]
             exterior_img = obs["exterior_image_1_left"]
             
             if not args.headless:
                 # Convert RGB to BGR for OpenCV display
-                wrist_bgr = cv2.cvtColor(wrist_img, cv2.COLOR_RGB2BGR)
+                r0_wrist_bgr = cv2.cvtColor(robot0_wrist, cv2.COLOR_RGB2BGR)
+                r1_wrist_bgr = cv2.cvtColor(robot1_wrist, cv2.COLOR_RGB2BGR)
                 exterior_bgr = cv2.cvtColor(exterior_img, cv2.COLOR_RGB2BGR)
                 
-                # Concatenate images horizontally (side by side)
-                combined = np.hstack([wrist_bgr, exterior_bgr])
+                # Resize exterior to match wrist images height if needed, 
+                # or just stack them. Let's stack them in a grid.
+                top_row = np.hstack([r0_wrist_bgr, r1_wrist_bgr])
+                
+                # Resize exterior to match the width of top_row
+                ext_resized = cv2.resize(exterior_bgr, (top_row.shape[1], int(exterior_bgr.shape[0] * top_row.shape[1] / exterior_bgr.shape[1])))
+                
+                combined = np.vstack([top_row, ext_resized])
                 
                 # Add labels
-                cv2.putText(combined, "Wrist Camera", (10, 30), 
+                cv2.putText(combined, "Robot 0 Wrist", (10, 30), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                cv2.putText(combined, "Exterior Camera", (wrist_img.shape[1] + 10, 30), 
+                cv2.putText(combined, "Robot 1 Wrist", (robot0_wrist.shape[1] + 10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(combined, "Exterior Camera", (10, top_row.shape[0] + 30), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
                 cv2.imshow("Robot Cameras", combined)
@@ -108,17 +128,10 @@ def main() -> None:
 
             request = _build_policy_observation(obs, args.prompt)
             result = policy.infer(request)
-            actions = np.asarray(result.get("actions"))
+            actions = result.get("actions")
             
-            # Take the first action in the chunk (or the only action)
-            if actions.ndim == 1:
-                action = actions
-            else:
-                action = actions[0]
-
-            action = np.asarray(action, dtype=np.float32)
-            action = np.clip(action, -1.0, 1.0)
-            env.apply_action({"actions": action})
+            # actions is expected to be a list of arrays [r0_action, r1_action]
+            env.apply_action({"actions": actions})
             
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt received, stopping simulation.")
@@ -132,10 +145,17 @@ def main() -> None:
 
 def _build_policy_observation(obs: dict, prompt: str) -> dict:
     return {
-        "observation/wrist_image_left": obs["wrist_image_left"],
-        "observation/exterior_image_1_left": obs["exterior_image_1_left"],
-        "observation/joint_position": obs["joint_position"],
-        "observation/gripper_position": obs["gripper_position"],
+        "observation/robot0_wrist_image_left": obs.get("robot0_wrist_image_left"),
+        "observation/robot1_wrist_image_left": obs.get("robot1_wrist_image_left"),
+        "observation/robot0_joint_position": obs.get("robot0_joint_position"),
+        "observation/robot1_joint_position": obs.get("robot1_joint_position"),
+        "observation/robot0_gripper_position": obs.get("robot0_gripper_position"),
+        "observation/robot1_gripper_position": obs.get("robot1_gripper_position"),
+        "observation/exterior_image_1_left": obs.get("exterior_image_1_left"),
+        # Backward compatibility for robot 0
+        "observation/wrist_image_left": obs.get("wrist_image_left"),
+        "observation/joint_position": obs.get("joint_position"),
+        "observation/gripper_position": obs.get("gripper_position"),
         "prompt": prompt,
     }
 

@@ -55,7 +55,15 @@ class EnvConfig:
     cube_scale: np.ndarray = field(default_factory=lambda: np.array([0.04, 0.04, 0.04]))
     cube_color: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0]))
     light_prim_path: str = "/World/KeyLight"
-    xarm_prim_path: str = "/World/XArm"
+    
+    # xArm 0
+    xarm_0_prim_path: str = "/World/XArm_0"
+    xarm_0_position: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.2, 0.55]))
+    
+    # xArm 1
+    xarm_1_prim_path: str = "/World/XArm_1"
+    xarm_1_position: np.ndarray = field(default_factory=lambda: np.array([0.0, -0.2, 0.55]))
+    
     xarm_usd_default: str = "Isaac/Robots/Ufactory/xarm7/xarm7.usd"
     xarm_placeholder_size: float = 0.1
     xarm_placeholder_name: str = "xarm_placeholder"
@@ -139,34 +147,56 @@ class XArmIsaacEnvironment(_environment.Environment):
         light = UsdLux.DistantLight.Define(self._world.stage, cfg.light_prim_path)
         light.CreateIntensityAttr(cfg.light_intensity)
 
-        self._xarm_prim_path = cfg.xarm_prim_path
         xarm_usd = cfg.xarm_usd_path or self._join_assets_path(assets_root, cfg.xarm_usd_default)
         xarm_usd = self._resolve_asset_path(xarm_usd, assets_root)
         if not xarm_usd:
             raise RuntimeError("XArm USD path is required.")
-        add_reference_to_stage(xarm_usd, self._xarm_prim_path)
 
-        if not is_prim_path_valid(self._xarm_prim_path):
-            raise RuntimeError(f"XArm prim path missing after stage setup (usd={xarm_usd}).")
+        # Initialize robot-specific data
+        self._xarms: list[Articulation] = []
+        self._wrist_cameras: list[Camera] = []
+        self._wrist_prims: list[XFormPrim] = []
+        
+        for i, prim_path in enumerate([cfg.xarm_0_prim_path, cfg.xarm_1_prim_path]):
+            add_reference_to_stage(xarm_usd, prim_path)
+            if not is_prim_path_valid(prim_path):
+                 raise RuntimeError(f"XArm {i} prim path missing after stage setup (usd={xarm_usd}).")
+            
+            # Set position
+            xarm_xform = UsdGeom.Xformable(self._world.stage.GetPrimAtPath(prim_path))
+            xarm_position = Gf.Vec3d(
+                float([cfg.xarm_0_position, cfg.xarm_1_position][i][0]),
+                float([cfg.xarm_0_position, cfg.xarm_1_position][i][1]),
+                float([cfg.xarm_0_position, cfg.xarm_1_position][i][2]),
+            )
+            translate_ops = [
+                op for op in xarm_xform.GetOrderedXformOps() if op.GetOpType() == UsdGeom.XformOp.TypeTranslate
+            ]
+            if translate_ops:
+                translate_ops[0].Set(xarm_position)
+            else:
+                xarm_xform.AddTranslateOp().Set(xarm_position)
 
-        self._wrist_camera = None
-        self._wrist_prim = None
-        self._left_camera = None
-        wrist_parent_path = self._find_wrist_parent_path(Usd, self._xarm_prim_path, cfg.wrist_link_name)
-        self._wrist_prim = XFormPrim(prim_path=wrist_parent_path, name=cfg.wrist_link_name)
-        wrist_camera_path = f"{wrist_parent_path}/{cfg.wrist_camera_prim_name}"
-        self._wrist_camera = Camera(
-            prim_path=wrist_camera_path,
-            name=cfg.wrist_camera_name,
-            resolution=cfg.wrist_camera_resolution,
-            frequency=1.0 / cfg.rendering_dt,
-        )
-        self._wrist_camera.set_local_pose(
-            translation=cfg.wrist_camera_translation,
-            orientation=self._euler_xyz_to_quat(cfg.wrist_camera_rpy),
-        )
+            # Wrist Camera
+            wrist_parent_path = self._find_wrist_parent_path(Usd, prim_path, cfg.wrist_link_name)
+            self._wrist_prims.append(XFormPrim(prim_path=wrist_parent_path, name=f"{cfg.wrist_link_name}_{i}"))
+            wrist_camera_path = f"{wrist_parent_path}/{cfg.wrist_camera_prim_name}_{i}"
+            wrist_camera = Camera(
+                prim_path=wrist_camera_path,
+                name=f"{cfg.wrist_camera_name}_{i}",
+                resolution=cfg.wrist_camera_resolution,
+                frequency=1.0 / cfg.rendering_dt,
+            )
+            wrist_camera.set_local_pose(
+                translation=cfg.wrist_camera_translation,
+                orientation=self._euler_xyz_to_quat(cfg.wrist_camera_rpy),
+            )
+            self._wrist_cameras.append(wrist_camera)
+            self._xarms.append(Articulation(prim_path=prim_path, name=f"xarm_{i}"))
+
+        # Exterior Camera
         self._left_camera = Camera(
-            prim_path=f"{self._xarm_prim_path}/{cfg.left_camera_prim_name}",
+            prim_path=f"/World/{cfg.left_camera_prim_name}",
             name=cfg.left_camera_name,
             resolution=cfg.left_camera_resolution,
             frequency=1.0 / cfg.rendering_dt,
@@ -176,25 +206,6 @@ class XArmIsaacEnvironment(_environment.Environment):
             orientation=self._euler_xyz_to_quat(cfg.left_camera_rpy),
         )
 
-        if use_default_table:
-            xarm_xform = UsdGeom.Xformable(self._world.stage.GetPrimAtPath(self._xarm_prim_path))
-            translate_ops = [
-                op for op in xarm_xform.GetOrderedXformOps() if op.GetOpType() == UsdGeom.XformOp.TypeTranslate
-            ]
-            xarm_position = Gf.Vec3d(
-                float(cfg.table_position[0]),
-                float(cfg.table_position[1]),
-                float(cfg.table_position[2] + cfg.table_scale[2] / 2.0),
-            )
-            if translate_ops:
-                translate_ops[0].Set(xarm_position)
-            else:
-                xarm_xform.AddTranslateOp().Set(xarm_position)
-
-        self._xarm = None
-        if xarm_usd:
-            self._xarm = Articulation(prim_path=self._xarm_prim_path, name="xarm")
-
         set_camera_view(eye=cfg.camera_eye, target=cfg.camera_target)
 
     @override
@@ -203,28 +214,35 @@ class XArmIsaacEnvironment(_environment.Environment):
         # Step once to ensure physics views are created before querying articulation state.
         self._world.step(render=False)
         self._step_count = 0
-        if self._xarm is not None:
-            # Ensure articulation is initialized before sending targets.
-            self._xarm.initialize()
-            dof_names = self._xarm.dof_names
+        
+        # Initialize all xArms
+        self._dof_counts = []
+        self._all_dof_names = []
+        self._all_arm_indices = []
+        self._all_gripper_indices = []
+
+        for i, xarm in enumerate(self._xarms):
+            xarm.initialize()
+            dof_names = xarm.dof_names
             if dof_names:
-                self._dof_names = list(dof_names)
-                self._arm_dof_indices, self._gripper_dof_indices = self._infer_dof_groups(self._dof_names)
-                logging.info("xArm DOF names: %s", list(enumerate(dof_names)))
-                logging.info(
-                    "xArm DOF groups: arm=%s gripper=%s",
-                    self._arm_dof_indices,
-                    self._gripper_dof_indices,
-                )
-            current = self.get_joint_positions()
+                self._all_dof_names.append(list(dof_names))
+                arm_idx, gripper_idx = self._infer_dof_groups(list(dof_names))
+                self._all_arm_indices.append(arm_idx)
+                self._all_gripper_indices.append(gripper_idx)
+            
+            current = xarm.get_joint_positions()
             if current is not None and current.size:
-                self._dof_count = int(current.size)
-        self._last_action = np.zeros(self._dof_count, dtype=np.float64)
-        self._last_action_dict = self._default_action_dict()
-        if self._wrist_camera is not None:
-            self._wrist_camera.initialize()
+                self._dof_counts.append(int(current.size))
+            else:
+                self._dof_counts.append(13) # Default
+
+        self._last_actions = [np.zeros(count, dtype=np.float64) for count in self._dof_counts]
+        
+        for cam in self._wrist_cameras:
+            cam.initialize()
         if self._left_camera is not None:
             self._left_camera.initialize()
+            
         for _ in range(self.cfg.wrist_camera_warmup_steps):
             self._world.step(render=True)
 
@@ -238,90 +256,121 @@ class XArmIsaacEnvironment(_environment.Environment):
 
     @override
     def apply_action(self, action: dict) -> None:
-        if self._xarm is None:
+        # Expecting action["actions"] to be a list of actions for [robot0, robot1]
+        # or a single concatenated array.
+        targets_list = action.get("actions")
+        if targets_list is None:
             return
 
-        # 1. Extract raw targets
-        targets = action.get("actions")
-        if targets is None and "action_dict" in action:
-            targets = action["action_dict"].get("joint_position")
-        
-        if targets is None:
-            return
-            
-        targets = np.asarray(targets, dtype=np.float64).flatten()
-        self._last_action = targets
-
-        # 2. Get current state for integration
-        current_full = self.get_joint_positions()
-        if current_full is None:
-            current_full = np.zeros(self._dof_count, dtype=np.float64)
-            
-        position_targets = current_full.copy()
-
-        # 3. Split targets based on indices
-        arm_v, gripper_p = self._split_action(targets)
-
-        # 4. Integrate Velocities for Arm
-        if arm_v is not None:
-            # Match provided velocities to arm joints
-            idx = np.array(self._arm_dof_indices[:arm_v.size], dtype=np.int64)
-            position_targets[idx] += arm_v[:idx.size] * self.cfg.velocity_integration_dt
-
-        # 5. Apply Absolute Positions for Gripper
-        if gripper_p is not None:
-            idx = np.array(self._gripper_dof_indices, dtype=np.int64)
-            if gripper_p.size == 1:
-                # DROID case: broadcast 1 scalar to all gripper DOFs
-                position_targets[idx] = gripper_p[0]
+        # Handle different action formats
+        if isinstance(targets_list, (list, tuple)):
+            actions = [np.asarray(t, dtype=np.float64).flatten() for t in targets_list]
+        elif isinstance(targets_list, np.ndarray):
+            # If it's a 2D array [batch, action_dim], we take the first chunk or split it
+            if targets_list.ndim == 2:
+                actions = [targets_list[i] for i in range(min(len(targets_list), len(self._xarms)))]
             else:
-                # Multi-DOF gripper case: use as many as provided
-                count = min(len(idx), gripper_p.size)
-                position_targets[idx[:count]] = gripper_p[:count]
+                # Concatenated? For now assume it's for robot 0 or needs splitting.
+                # To be safe, let's assume if it's 1D, it's for Robot 0, unless it's long enough for both.
+                total_expected = sum(len(self._all_arm_indices[i]) + 1 for i in range(len(self._xarms)))
+                if targets_list.size == total_expected:
+                    # Split it
+                    actions = []
+                    curr = 0
+                    for i in range(len(self._xarms)):
+                        size = len(self._all_arm_indices[i]) + 1
+                        actions.append(targets_list[curr:curr+size])
+                        curr += size
+                else:
+                    actions = [targets_list] # Just robot 0?
+        else:
+            actions = [np.asarray(targets_list, dtype=np.float64).flatten()]
 
-        self._set_joint_position_targets(position_targets)
-        render = (not self.cfg.headless) or (self._wrist_camera is not None)
+        for i, (xarm, robot_action) in enumerate(zip(self._xarms, actions)):
+            if i >= len(self._xarms):
+                break
+                
+            self._last_actions[i] = robot_action
+
+            # Get current state for integration
+            current_full = xarm.get_joint_positions()
+            if current_full is None:
+                current_full = np.zeros(self._dof_counts[i], dtype=np.float64)
+                
+            position_targets = current_full.copy()
+
+            # Split targets based on indices
+            arm_v, gripper_p = self._split_action_for_robot(robot_action, i)
+
+            # Integrate Velocities for Arm
+            if arm_v is not None:
+                idx = np.array(self._all_arm_indices[i][:arm_v.size], dtype=np.int64)
+                position_targets[idx] += arm_v[:idx.size] * self.cfg.velocity_integration_dt
+
+            # Apply Absolute Positions for Gripper
+            if gripper_p is not None:
+                idx = np.array(self._all_gripper_indices[i], dtype=np.int64)
+                if gripper_p.size == 1:
+                    position_targets[idx] = gripper_p[0]
+                else:
+                    count = min(len(idx), gripper_p.size)
+                    position_targets[idx[:count]] = gripper_p[:count]
+
+            if hasattr(xarm, "set_joint_position_targets"):
+                xarm.set_joint_position_targets(position_targets)
+            else:
+                xarm.set_joint_positions(position_targets)
+
+        render = (not self.cfg.headless) or any(cam is not None for cam in self._wrist_cameras)
         self._world.step(render=render)
         self._step_count += 1
 
     def step(self, render: bool | None = None) -> None:
         if render is None:
-            render = (not self.cfg.headless) or (self._wrist_camera is not None)
+            render = (not self.cfg.headless) or any(cam is not None for cam in self._wrist_cameras)
         self._world.step(render=render)
 
     def close(self) -> None:
         self._simulation_app.close()
 
-    def get_joint_positions(self) -> np.ndarray | None:
-        if self._xarm is None:
+    def get_joint_positions(self, robot_id: int = 0) -> np.ndarray | None:
+        if robot_id >= len(self._xarms):
             return None
-        qpos = self._xarm.get_joint_positions()
+        xarm = self._xarms[robot_id]
+        qpos = xarm.get_joint_positions()
         if qpos is None:
             return None
         return np.asarray(qpos, dtype=np.float64)
 
     def _collect_observation(self) -> dict:
-        state = self.get_joint_positions()
-        images = {}
-        if self._wrist_camera is not None:
-            rgb = self._wrist_camera.get_rgb()
-            if rgb is not None:
-                images[self.cfg.wrist_image_left_key] = self._as_uint8(rgb)
+        obs = {}
+        for i, xarm in enumerate(self._xarms):
+            state = self.get_joint_positions(i)
+            joint_position = np.asarray(
+                state if state is not None else np.zeros(self._dof_counts[i]),
+                dtype=np.float64,
+            )
+            gripper_position = self._get_gripper_position(joint_position, i)
+            
+            obs[f"robot{i}_joint_position"] = joint_position
+            obs[f"robot{i}_gripper_position"] = gripper_position
+            
+            if i < len(self._wrist_cameras):
+                rgb = self._wrist_cameras[i].get_rgb()
+                if rgb is not None:
+                    obs[f"robot{i}_wrist_image_left"] = self._as_uint8(rgb)
+        
         if self._left_camera is not None:
             rgb = self._left_camera.get_rgb()
             if rgb is not None:
-                images[self.cfg.exterior_image_1_left_key] = self._as_uint8(rgb)
-        joint_position = np.asarray(
-            state if state is not None else np.zeros(self._dof_count),
-            dtype=np.float64,
-        )
-        gripper_position = self._get_gripper_position(joint_position)
-        return {
-            "gripper_position": gripper_position,
-            "joint_position": joint_position,
-            "wrist_image_left": images.get(self.cfg.wrist_image_left_key),
-            "exterior_image_1_left": images.get(self.cfg.exterior_image_1_left_key),
-        }
+                obs[self.cfg.exterior_image_1_left_key] = self._as_uint8(rgb)
+        
+        # Maintain backward compatibility for robot 0
+        obs["joint_position"] = obs.get("robot0_joint_position")
+        obs["gripper_position"] = obs.get("robot0_gripper_position")
+        obs["wrist_image_left"] = obs.get("robot0_wrist_image_left")
+        
+        return obs
 
     def _find_wrist_parent_path(self, usd_module, xarm_root: str, wrist_link_name: str) -> str:
         wrist_parent_path = f"{xarm_root}/{wrist_link_name}"
@@ -372,13 +421,15 @@ class XArmIsaacEnvironment(_environment.Environment):
         return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float64)
 
     def _default_action_dict(self) -> dict:
+        # Note: This is now mostly for robot 0 or as a template
+        count = self._dof_counts[0] if hasattr(self, "_dof_counts") and self._dof_counts else 13
         return {
             "gripper_position": np.zeros(1, dtype=np.float64),
             "gripper_velocity": np.zeros(1, dtype=np.float64),
             "cartesian_position": np.zeros(6, dtype=np.float64),
             "cartesian_velocity": np.zeros(6, dtype=np.float64),
-            "joint_position": np.zeros(self._dof_count, dtype=np.float64),
-            "joint_velocity": np.zeros(self._dof_count, dtype=np.float64),
+            "joint_position": np.zeros(count, dtype=np.float64),
+            "joint_velocity": np.zeros(count, dtype=np.float64),
         }
 
     def _normalize_action_dict(self, action_dict: dict) -> dict:
@@ -399,15 +450,15 @@ class XArmIsaacEnvironment(_environment.Environment):
         arm_indices = [i for i in range(len(lower)) if i not in gripper_indices]
         return arm_indices, gripper_indices
 
-    def _split_action(self, action: np.ndarray) -> tuple[np.ndarray | None, np.ndarray | None]:
+    def _split_action_for_robot(self, action: np.ndarray, robot_id: int) -> tuple[np.ndarray | None, np.ndarray | None]:
         action = np.asarray(action, dtype=np.float64).flatten()
         if not action.size:
             return None, None
         
-        arm_count = len(self._arm_dof_indices)
+        arm_count = len(self._all_arm_indices[robot_id])
         
         # Priority 1: Exact match with arm + gripper_count
-        if action.size == arm_count + len(self._gripper_dof_indices):
+        if action.size == arm_count + len(self._all_gripper_indices[robot_id]):
             return action[:arm_count], action[arm_count:]
             
         # Priority 2: Standard DROID match [arm + 1]
@@ -420,14 +471,14 @@ class XArmIsaacEnvironment(_environment.Environment):
              
         return action, None
 
-    def _expand_gripper_targets(self, gripper_command: np.ndarray, current_full: np.ndarray) -> np.ndarray | None:
-        if not self._gripper_dof_indices:
+    def _expand_gripper_targets(self, gripper_command: np.ndarray, current_full: np.ndarray, robot_id: int) -> np.ndarray | None:
+        if not self._all_gripper_indices[robot_id]:
             return None
         gripper_command = np.asarray(gripper_command, dtype=np.float32).reshape(-1)
         if not gripper_command.size:
             return None
         targets = current_full.copy()
-        indices = np.array(self._gripper_dof_indices, dtype=np.int64)
+        indices = np.array(self._all_gripper_indices[robot_id], dtype=np.int64)
         if gripper_command.size == 1:
             targets[indices] = gripper_command[0]
         else:
@@ -435,25 +486,29 @@ class XArmIsaacEnvironment(_environment.Environment):
             targets[indices[:count]] = gripper_command[:count]
         return targets
 
-    def _set_joint_position_targets(self, targets: np.ndarray) -> None:
-        if hasattr(self._xarm, "set_joint_position_targets"):
-            self._xarm.set_joint_position_targets(targets)
+    def _set_joint_position_targets(self, targets: np.ndarray, robot_id: int = 0) -> None:
+        if robot_id >= len(self._xarms):
+            return
+        xarm = self._xarms[robot_id]
+        if hasattr(xarm, "set_joint_position_targets"):
+            xarm.set_joint_position_targets(targets)
         else:
-            self._xarm.set_joint_positions(targets)
+            xarm.set_joint_positions(targets)
 
-    def _get_gripper_position(self, joint_position: np.ndarray) -> np.ndarray:
-        if not self._gripper_dof_indices:
+    def _get_gripper_position(self, joint_position: np.ndarray, robot_id: int = 0) -> np.ndarray:
+        if robot_id >= len(self._all_gripper_indices):
             return np.zeros(1, dtype=np.float64)
-        indices = np.array(self._gripper_dof_indices, dtype=np.int64)
+        indices = np.array(self._all_gripper_indices[robot_id], dtype=np.int64)
         if joint_position.size <= indices.max():
             return np.zeros(1, dtype=np.float64)
         return np.array([float(np.mean(joint_position[indices]))], dtype=np.float64)
 
-    def _get_wrist_cartesian_position(self) -> np.ndarray:
-        if self._wrist_prim is None:
+    def _get_wrist_cartesian_position(self, robot_id: int = 0) -> np.ndarray:
+        if robot_id >= len(self._wrist_prims):
             return np.zeros(6, dtype=np.float64)
+        wrist_prim = self._wrist_prims[robot_id]
         try:
-            position, orientation = self._wrist_prim.get_world_pose()
+            position, orientation = wrist_prim.get_world_pose()
         except Exception:
             return np.zeros(6, dtype=np.float64)
         position = np.asarray(position, dtype=np.float64).reshape(-1)
