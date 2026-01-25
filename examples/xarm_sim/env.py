@@ -69,6 +69,11 @@ class EnvConfig:
     xarm_placeholder_child_name: str = "Placeholder"
     action_delta_scale: float = 0.05
     velocity_integration_dt: float = 0.1  # Typical for 10Hz policy loops
+    # Initial joint positions: [j1, j2, j3, j4, j5, j6, j7] - arms raised with elbows bent
+    initial_arm_positions: np.ndarray = field(
+        default_factory=lambda: np.array([0.0, -0.5, 0.0, 0.8, 0.0, 0.5, 0.0])
+    )
+    initial_gripper_position: float = 0.0  # Gripper closed
 
 
 class XArmIsaacEnvironment(_environment.Environment):
@@ -227,6 +232,22 @@ class XArmIsaacEnvironment(_environment.Environment):
                 self._dof_counts.append(13) # Default
 
         self._last_actions = [np.zeros(count, dtype=np.float64) for count in self._dof_counts]
+        
+        # Set initial joint positions to raise arms off the table
+        for i, xarm in enumerate(self._xarms):
+            initial_positions = np.zeros(self._dof_counts[i], dtype=np.float64)
+            # Set arm joint positions
+            arm_indices = self._all_arm_indices[i]
+            for j, idx in enumerate(arm_indices):
+                if j < len(self.cfg.initial_arm_positions):
+                    initial_positions[idx] = self.cfg.initial_arm_positions[j]
+            # Set gripper positions
+            for idx in self._all_gripper_indices[i]:
+                initial_positions[idx] = self.cfg.initial_gripper_position
+            xarm.set_joint_positions(initial_positions)
+        
+        # Step to apply initial positions
+        self._world.step(render=False)
         
         for cam in self._wrist_cameras:
             cam.initialize()
