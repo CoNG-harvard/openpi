@@ -21,7 +21,7 @@ class EnvConfig:
     table_color: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0]))
     camera_eye: list[float] = field(default_factory=lambda: [2.0, 0.9, 1.2])
     camera_target: list[float] = field(default_factory=lambda: [1.1, 0.4, 0.9])
-    light_intensity: float = 10000.0
+    light_intensity: float = 1000.0
     wrist_camera_warmup_steps: int = 5
     camera_resolution: tuple[int, int] = (224, 224)
     wrist_camera_translation: np.ndarray = field(
@@ -57,10 +57,10 @@ class EnvConfig:
     
     # Overhead camera - top-down view
     overhead_camera_translation: np.ndarray = field(
-        default_factory=lambda: np.array([0.4, 0.0, 2.5])
+        default_factory=lambda: np.array([0.3, 0.0, 2.5])
     )
     overhead_camera_rpy: np.ndarray = field(
-        default_factory=lambda: np.array([-3.14, 0.0, 0.0])
+        default_factory=lambda: np.array([0.0, 1.57, 0])
     )
     overhead_camera_name: str = "overhead_camera"
     overhead_camera_prim_name: str = "OverheadCamera"
@@ -411,18 +411,15 @@ class XArmIsaacEnvironment(_environment.Environment):
                 cube = self._world.scene.get_object(self.cfg.cube_name)
                 if cube:
                     pos, _ = cube.get_world_pose()
-                    print(f"DEBUG_STEP: Cube Pos: {pos}")
                 
                 if self._left_camera:
                      pos, orient = self._left_camera.get_world_pose()
                      # orient is usually w, x, y, z
-                     print(f"DEBUG_STEP: Left Cam Pos: {pos}, Orient: {orient}")
                      
                 if self._front_camera:
                      pos, _ = self._front_camera.get_world_pose()
-                     print(f"DEBUG_STEP: Front Cam Pos: {pos}")
             except Exception as e:
-                print(f"DEBUG_STEP Error: {e}")
+                pass
 
     def close(self) -> None:
         self._simulation_app.close()
@@ -605,46 +602,6 @@ class XArmIsaacEnvironment(_environment.Environment):
             return np.zeros(6, dtype=np.float64)
         euler = self._quat_wxyz_to_euler_xyz(orientation[:4])
         return np.concatenate([position[:3], euler]).astype(np.float64)
-
-
-
-    def _compute_look_at_orientation(self, eye: np.ndarray, target: np.ndarray, up: np.ndarray = np.array([0.0, 0.0, 1.0])) -> np.ndarray:
-        """Computes the quaternion (w, x, y, z) for a camera using scipy."""
-        # Camera convention: -Z is forward, +Y is up, +X is right
-        
-        eye = np.asarray(eye, dtype=np.float64)
-        target = np.asarray(target, dtype=np.float64)
-        up = np.asarray(up, dtype=np.float64)
-        
-        # Forward vector (from eye to target)
-        forward = target - eye
-        forward /= np.linalg.norm(forward)
-        
-        # Camera Z axis points backwards (opposite to forward)
-        z_axis = -forward
-        
-        # Camera X axis
-        x_axis = np.cross(up, z_axis)
-        if np.linalg.norm(x_axis) < 1e-6:
-             # Handle degenerate case where up is parallel to z_axis
-             # Just pick an arbitrary axis, e.g. X
-             x_axis = np.cross(np.array([1.0, 0.0, 0.0]), z_axis)
-             
-        x_axis /= np.linalg.norm(x_axis)
-        
-        # Camera Y axis
-        y_axis = np.cross(z_axis, x_axis)
-        
-        # Rotation matrix [R_col1, R_col2, R_col3]
-        rot_mat = np.column_stack([x_axis, y_axis, z_axis])
-        
-        # Convert to quaternion (x, y, z, w)
-        quat_xyzw = R.from_matrix(rot_mat).as_quat()
-        
-        # print(f"DEBUG_MATH: Eye={eye} Target={target} Fwd={forward} Quat={quat_xyzw}")
-        
-        # Return (w, x, y, z)
-        return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float64)
 
     @staticmethod
     def _quat_wxyz_to_euler_xyz(quat: np.ndarray) -> np.ndarray:
