@@ -15,7 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headless", action="store_true", help="Run without a viewer")
     parser.add_argument("--host", default="0.0.0.0", help="Policy server host")
     parser.add_argument("--port", type=int, default=8000, help="Policy server port")
-    parser.add_argument("--prompt", default="pick the red cube", help="Prompt to send with observations")
+    parser.add_argument("--prompt", default="pick the cube", help="Prompt to send with observations")
     parser.add_argument(
         "--random",
         action="store_true",

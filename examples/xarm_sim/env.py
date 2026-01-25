@@ -21,14 +21,14 @@ class EnvConfig:
     table_color: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0]))
     camera_eye: list[float] = field(default_factory=lambda: [2.0, 0.9, 1.2])
     camera_target: list[float] = field(default_factory=lambda: [1.1, 0.4, 0.9])
-    light_intensity: float = 1000.0
+    light_intensity: float = 4000.0
     wrist_camera_warmup_steps: int = 5
     camera_resolution: tuple[int, int] = (224, 224)
     wrist_camera_translation: np.ndarray = field(
-        default_factory=lambda: np.array([-0.0753, 0.0287, 0.0233])
+        default_factory=lambda: np.array([0.00, 0.0, 0.02])
     )
     wrist_camera_rpy: np.ndarray = field(
-        default_factory=lambda: np.array([-0.3256, 0.0062, -1.5629])
+        default_factory=lambda: np.array([0.0, -0.3, 3.14])
     )
     wrist_camera_name: str = "wrist_camera"
     wrist_camera_prim_name: str = "WristCamera"
@@ -213,9 +213,12 @@ class XArmIsaacEnvironment(_environment.Environment):
                 prim_path=wrist_camera_path,
                 name=f"{cfg.wrist_camera_name}_{i}",
                 resolution=cfg.camera_resolution,
-                position=cfg.wrist_camera_translation,
-                orientation=self._euler_xyz_to_quat(cfg.wrist_camera_rpy),
                 frequency=1.0 / cfg.rendering_dt,
+            )
+            # Set local pose relative to parent link7
+            wrist_camera.set_local_pose(
+                translation=cfg.wrist_camera_translation,
+                orientation=self._euler_xyz_to_quat(cfg.wrist_camera_rpy),
             )
             self._wrist_cameras.append(wrist_camera)
             self._xarms.append(Articulation(prim_path=prim_path, name=f"xarm_{i}"))
