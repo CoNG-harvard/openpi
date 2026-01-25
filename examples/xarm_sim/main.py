@@ -3,9 +3,7 @@ import logging
 
 import cv2
 import numpy as np
-from collections import deque
 
-from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
 
 from env import EnvConfig, XArmIsaacEnvironment
@@ -17,9 +15,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0", help="Policy server host")
     parser.add_argument("--port", type=int, default=8000, help="Policy server port")
     parser.add_argument("--prompt", default="pick the red cube", help="Prompt to send with observations")
-    parser.add_argument("--webrtc", dest="webrtc", action="store_true", help="Enable WebRTC streaming")
-    parser.add_argument("--no-webrtc", dest="webrtc", action="store_false", help="Disable WebRTC streaming")
-    parser.set_defaults(webrtc=True)
     parser.add_argument(
         "--random-policy",
         action="store_true",
@@ -71,7 +66,6 @@ def main() -> None:
     
     cfg = EnvConfig(
         headless=args.headless,
-        enable_webrtc=args.webrtc,
     )
     
     env = XArmIsaacEnvironment(cfg)

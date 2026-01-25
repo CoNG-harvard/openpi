@@ -11,7 +11,6 @@ from typing_extensions import override
 @dataclass
 class EnvConfig:
     headless: bool = True
-    enable_webrtc: bool = True
     physics_dt: float = 1.0 / 60.0
     rendering_dt: float = 1.0 / 60.0
     stage_units_in_meters: float = 1.0
@@ -86,16 +85,7 @@ class XArmIsaacEnvironment(_environment.Environment):
         self._last_action_dict = self._default_action_dict()
         from isaacsim import SimulationApp
 
-        launch_config = {"headless": cfg.headless}
-        if cfg.enable_webrtc:
-            # hide_ui=False is required for the video capture process to function correctly.
-            launch_config["hide_ui"] = False
-
-        self._simulation_app = SimulationApp(launch_config)
-
-        if cfg.enable_webrtc:
-            import omni.kit.app
-            omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate("omni.kit.livestream.webrtc", True)
+        self._simulation_app = SimulationApp({"headless": cfg.headless})
 
         from omni.isaac.core import World
         from omni.isaac.core.objects import FixedCuboid, GroundPlane
