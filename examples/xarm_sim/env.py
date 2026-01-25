@@ -83,8 +83,8 @@ class EnvConfig:
     table_name: str = "table"
     cube_prim_path: str = "/World/TargetCube"
     cube_name: str = "target_cube"
-    cube_position: np.ndarray = field(default_factory=lambda: np.array([0.4, 0.0, 0.6]))
-    cube_scale: np.ndarray = field(default_factory=lambda: np.array([0.2, 0.2, 0.2]))
+    cube_position: np.ndarray = field(default_factory=lambda: np.array([0.4, 0.0, 0.55]))
+    cube_scale: np.ndarray = field(default_factory=lambda: np.array([0.05, 0.05, 0.05]))
     cube_color: np.ndarray = field(default_factory=lambda: np.array([0.0, 1.0, 0.0]))
     light_prim_path: str = "/World/KeyLight"
     
