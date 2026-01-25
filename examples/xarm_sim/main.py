@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8000, help="Policy server port")
     parser.add_argument("--prompt", default="pick the red cube", help="Prompt to send with observations")
     parser.add_argument(
-        "--random-policy",
+        "--random",
         action="store_true",
         help="Use a random oscillating policy instead of the policy server",
     )
@@ -71,7 +71,7 @@ def main() -> None:
     env = XArmIsaacEnvironment(cfg)
     env.reset()
 
-    if args.random_policy:
+    if args.random:
         logging.info("Using OscillatingPolicy")
         policy = OscillatingPolicy(num_robots=2)
     else:
@@ -130,7 +130,7 @@ def main() -> None:
                 cv2.imshow("Robot Cameras", combined)
                 cv2.waitKey(1)  # Refresh display
 
-            if args.random_policy:
+            if args.random:
                 request = _build_policy_observation(obs, args.prompt)
                 result = policy.infer(request)
                 action = result.get("actions") # List of arrays
