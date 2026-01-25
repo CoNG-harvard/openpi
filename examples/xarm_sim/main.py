@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 
 import cv2
 import numpy as np
@@ -85,6 +86,7 @@ def main() -> None:
     # Rollout parameters
     actions_from_chunk_completed = 0
     pred_action_chunk = None
+    snapshot_saved = False
 
     try:
         while True:
@@ -100,35 +102,56 @@ def main() -> None:
                 continue
             
             # Get images
-            robot0_wrist = obs["robot0_wrist_image_left"]
-            robot1_wrist = obs["robot1_wrist_image_left"]
-            exterior_img = obs["exterior_image_1_left"]
+            robot0_wrist = obs.get("robot0_wrist_image_left")
+            robot1_wrist = obs.get("robot1_wrist_image_left")
+            exterior_1 = obs.get("exterior_image_1_left")
+            exterior_2 = obs.get("exterior_image_2_left")
+            exterior_3 = obs.get("exterior_image_3_left")
+            exterior_4 = obs.get("exterior_image_4_left")
             
             if not args.headless:
-                # Convert RGB to BGR for OpenCV display
-                r0_wrist_bgr = cv2.cvtColor(robot0_wrist, cv2.COLOR_RGB2BGR)
-                r1_wrist_bgr = cv2.cvtColor(robot1_wrist, cv2.COLOR_RGB2BGR)
-                exterior_bgr = cv2.cvtColor(exterior_img, cv2.COLOR_RGB2BGR)
+                images_to_show = []
+                # Helper to process image
+                def process_img(img, label):
+                    if img is None:
+                        # Placeholder if missing
+                        img = np.zeros((224, 224, 3), dtype=np.uint8)
+                    else:
+                        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                    # Add label
+                    cv2.putText(img, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    return img
+
+                # Row 1: Wrist Cameras
+                row1 = np.hstack([
+                    process_img(robot0_wrist, "Robot 0 Wrist"),
+                    process_img(robot1_wrist, "Robot 1 Wrist")
+                ])
                 
-                # Resize exterior to match wrist images height if needed, 
-                # or just stack them. Let's stack them in a grid.
-                top_row = np.hstack([r0_wrist_bgr, r1_wrist_bgr])
+                # Row 2: Fixed Cameras 1 & 2
+                row2 = np.hstack([
+                    process_img(exterior_1, "Left Camera"),
+                    process_img(exterior_2, "Front Camera")
+                ])
+
+                # Row 3: Fixed Cameras 3 & 4
+                row3 = np.hstack([
+                    process_img(exterior_3, "Overhead Camera"),
+                    process_img(exterior_4, "Right Camera")
+                ])
                 
-                # Resize exterior to match the width of top_row
-                ext_resized = cv2.resize(exterior_bgr, (top_row.shape[1], int(exterior_bgr.shape[0] * top_row.shape[1] / exterior_bgr.shape[1])))
-                
-                combined = np.vstack([top_row, ext_resized])
-                
-                # Add labels
-                cv2.putText(combined, "Robot 0 Wrist", (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                cv2.putText(combined, "Robot 1 Wrist", (robot0_wrist.shape[1] + 10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                cv2.putText(combined, "Exterior Camera", (10, top_row.shape[0] + 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                # Stack all rows
+                combined = np.vstack([row1, row2, row3])
                 
                 cv2.imshow("Robot Cameras", combined)
                 cv2.waitKey(1)  # Refresh display
+
+                # SNAPSHOT for debugging
+                if not snapshot_saved and os.path.exists("/home/lening/.gemini/antigravity/brain/1bb64de2-d19b-4323-9477-2257f9c4f16e"):
+                     cv2.imwrite("/home/lening/.gemini/antigravity/brain/1bb64de2-d19b-4323-9477-2257f9c4f16e/snapshot.png", combined)
+                     snapshot_saved = True
+                     print("DEBUG: Snapshot saved to artifacts.")
+
 
             if args.random:
                 request = _build_policy_observation(obs, args.prompt)
@@ -165,6 +188,9 @@ def _build_policy_observation(obs: dict, prompt: str) -> dict:
         "observation/robot0_gripper_position": obs.get("robot0_gripper_position"),
         "observation/robot1_gripper_position": obs.get("robot1_gripper_position"),
         "observation/exterior_image_1_left": obs.get("exterior_image_1_left"),
+        "observation/exterior_image_2_left": obs.get("exterior_image_2_left"),
+        "observation/exterior_image_3_left": obs.get("exterior_image_3_left"),
+        "observation/exterior_image_4_left": obs.get("exterior_image_4_left"),
         # Backward compatibility for robot 0
         "observation/wrist_image_left": obs.get("wrist_image_left"),
         "observation/joint_position": obs.get("joint_position"),

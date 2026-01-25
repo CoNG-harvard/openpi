@@ -18,12 +18,12 @@ class EnvConfig:
     table_usd_path: str = os.environ.get("TABLE_USD_PATH", "")
     table_position: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.5]))
     table_scale: np.ndarray = field(default_factory=lambda: np.array([1.5, 0.8, 0.05]))
-    table_color: np.ndarray = field(default_factory=lambda: np.array([0.5, 0.5, 0.5]))
+    table_color: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0]))
     camera_eye: list[float] = field(default_factory=lambda: [2.0, 0.9, 1.2])
     camera_target: list[float] = field(default_factory=lambda: [1.1, 0.4, 0.9])
-    light_intensity: float = 1200.0
+    light_intensity: float = 10000.0
     wrist_camera_warmup_steps: int = 5
-    wrist_camera_resolution: tuple[int, int] = (224, 224)
+    camera_resolution: tuple[int, int] = (224, 224)
     wrist_camera_translation: np.ndarray = field(
         default_factory=lambda: np.array([-0.0753, 0.0287, 0.0233])
     )
@@ -34,25 +34,58 @@ class EnvConfig:
     wrist_camera_prim_name: str = "WristCamera"
     wrist_link_name: str = "link7"
     wrist_image_left_key: str = "wrist_image_left"
-    left_camera_resolution: tuple[int, int] = (224, 224)
     left_camera_translation: np.ndarray = field(
-        default_factory=lambda: np.array([0.4155, 0.4775, 0.4114])
+        default_factory=lambda: np.array([0.4, 1.5, 0.8])
     )
     left_camera_rpy: np.ndarray = field(
-        default_factory=lambda: np.array([-2.2160, -0.0226, -2.9637])
+        default_factory=lambda: np.array([-2.3, 0.0, -1.57])
     )
     left_camera_name: str = "left_camera"
     left_camera_prim_name: str = "LeftCamera"
     exterior_image_1_left_key: str = "exterior_image_1_left"
+    
+    # Front camera - looking at the workspace from the front
+    front_camera_translation: np.ndarray = field(
+        default_factory=lambda: np.array([1.8, 0.0, 0.8])
+    )
+    front_camera_rpy: np.ndarray = field(
+        default_factory=lambda: np.array([-2.3, 0.0, 3.14])
+    )
+    front_camera_name: str = "front_camera"
+    front_camera_prim_name: str = "FrontCamera"
+    exterior_image_2_left_key: str = "exterior_image_2_left"
+    
+    # Overhead camera - top-down view
+    overhead_camera_translation: np.ndarray = field(
+        default_factory=lambda: np.array([0.4, 0.0, 2.5])
+    )
+    overhead_camera_rpy: np.ndarray = field(
+        default_factory=lambda: np.array([-3.14, 0.0, 0.0])
+    )
+    overhead_camera_name: str = "overhead_camera"
+    overhead_camera_prim_name: str = "OverheadCamera"
+    exterior_image_3_left_key: str = "exterior_image_3_left"
+    
+    # Right camera - opposite side from left camera
+    camera_resolution: tuple[int, int] = (224, 224)
+    right_camera_translation: np.ndarray = field(
+        default_factory=lambda: np.array([0.4, -1.5, 0.8])
+    )
+    right_camera_rpy: np.ndarray = field(
+        default_factory=lambda: np.array([-2.3, 0.0, 1.57])
+    )
+    right_camera_name: str = "right_camera"
+    right_camera_prim_name: str = "RightCamera"
+    exterior_image_4_left_key: str = "exterior_image_4_left"
     ground_plane_prim_path: str = "/World/GroundPlane"
     ground_plane_name: str = "ground_plane"
     table_prim_path: str = "/World/Table"
     table_name: str = "table"
     cube_prim_path: str = "/World/TargetCube"
     cube_name: str = "target_cube"
-    cube_position: np.ndarray = field(default_factory=lambda: np.array([0.4, 0.0, 0.55]))
-    cube_scale: np.ndarray = field(default_factory=lambda: np.array([0.04, 0.04, 0.04]))
-    cube_color: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0]))
+    cube_position: np.ndarray = field(default_factory=lambda: np.array([0.4, 0.0, 0.6]))
+    cube_scale: np.ndarray = field(default_factory=lambda: np.array([0.2, 0.2, 0.2]))
+    cube_color: np.ndarray = field(default_factory=lambda: np.array([0.0, 1.0, 0.0]))
     light_prim_path: str = "/World/KeyLight"
     
     # xArm 0
@@ -179,26 +212,52 @@ class XArmIsaacEnvironment(_environment.Environment):
             wrist_camera = Camera(
                 prim_path=wrist_camera_path,
                 name=f"{cfg.wrist_camera_name}_{i}",
-                resolution=cfg.wrist_camera_resolution,
-                frequency=1.0 / cfg.rendering_dt,
-            )
-            wrist_camera.set_local_pose(
-                translation=cfg.wrist_camera_translation,
+                resolution=cfg.camera_resolution,
+                position=cfg.wrist_camera_translation,
                 orientation=self._euler_xyz_to_quat(cfg.wrist_camera_rpy),
+                frequency=1.0 / cfg.rendering_dt,
             )
             self._wrist_cameras.append(wrist_camera)
             self._xarms.append(Articulation(prim_path=prim_path, name=f"xarm_{i}"))
 
-        # Exterior Camera
+        # Left Camera
         self._left_camera = Camera(
             prim_path=f"/World/{cfg.left_camera_prim_name}",
             name=cfg.left_camera_name,
-            resolution=cfg.left_camera_resolution,
+            position=cfg.left_camera_translation,
+            orientation=self._euler_xyz_to_quat(cfg.left_camera_rpy),
+            resolution=cfg.camera_resolution,
             frequency=1.0 / cfg.rendering_dt,
         )
-        self._left_camera.set_local_pose(
-            translation=cfg.left_camera_translation,
-            orientation=self._euler_xyz_to_quat(cfg.left_camera_rpy),
+        
+        # Front Camera
+        self._front_camera = Camera(
+            prim_path=f"/World/{cfg.front_camera_prim_name}",
+            name=cfg.front_camera_name,
+            resolution=cfg.camera_resolution,
+            position=cfg.front_camera_translation,
+            orientation=self._euler_xyz_to_quat(cfg.front_camera_rpy),
+            frequency=1.0 / cfg.rendering_dt,
+        )
+        
+        # Overhead Camera
+        self._overhead_camera = Camera(
+            prim_path=f"/World/{cfg.overhead_camera_prim_name}",
+            name=cfg.overhead_camera_name,
+            resolution=cfg.camera_resolution,
+            frequency=1.0 / cfg.rendering_dt,
+            position=cfg.overhead_camera_translation,
+            orientation=self._euler_xyz_to_quat(cfg.overhead_camera_rpy),
+        )
+        
+        # Right Camera
+        self._right_camera = Camera(
+            prim_path=f"/World/{cfg.right_camera_prim_name}",
+            name=cfg.right_camera_name,
+            resolution=cfg.camera_resolution,
+            position=cfg.right_camera_translation,
+            orientation=self._euler_xyz_to_quat(cfg.right_camera_rpy),
+            frequency=1.0 / cfg.rendering_dt,
         )
 
         set_camera_view(eye=cfg.camera_eye, target=cfg.camera_target)
@@ -253,6 +312,12 @@ class XArmIsaacEnvironment(_environment.Environment):
             cam.initialize()
         if self._left_camera is not None:
             self._left_camera.initialize()
+        if self._front_camera is not None:
+            self._front_camera.initialize()
+        if self._overhead_camera is not None:
+            self._overhead_camera.initialize()
+        if self._right_camera is not None:
+            self._right_camera.initialize()
             
         for _ in range(self.cfg.wrist_camera_warmup_steps):
             self._world.step(render=True)
@@ -340,6 +405,24 @@ class XArmIsaacEnvironment(_environment.Environment):
         if render is None:
             render = (not self.cfg.headless) or any(cam is not None for cam in self._wrist_cameras)
         self._world.step(render=render)
+        
+        if self._step_count % 60 == 0:
+            try:
+                cube = self._world.scene.get_object(self.cfg.cube_name)
+                if cube:
+                    pos, _ = cube.get_world_pose()
+                    print(f"DEBUG_STEP: Cube Pos: {pos}")
+                
+                if self._left_camera:
+                     pos, orient = self._left_camera.get_world_pose()
+                     # orient is usually w, x, y, z
+                     print(f"DEBUG_STEP: Left Cam Pos: {pos}, Orient: {orient}")
+                     
+                if self._front_camera:
+                     pos, _ = self._front_camera.get_world_pose()
+                     print(f"DEBUG_STEP: Front Cam Pos: {pos}")
+            except Exception as e:
+                print(f"DEBUG_STEP Error: {e}")
 
     def close(self) -> None:
         self._simulation_app.close()
@@ -367,14 +450,19 @@ class XArmIsaacEnvironment(_environment.Environment):
             obs[f"robot{i}_gripper_position"] = gripper_position
             
             if i < len(self._wrist_cameras):
-                rgb = self._wrist_cameras[i].get_rgb()
-                if rgb is not None:
-                    obs[f"robot{i}_wrist_image_left"] = self._as_uint8(rgb)
+                obs[f"robot{i}_wrist_image_left"] = self._wrist_cameras[i].get_rgb()
         
         if self._left_camera is not None:
-            rgb = self._left_camera.get_rgb()
-            if rgb is not None:
-                obs[self.cfg.exterior_image_1_left_key] = self._as_uint8(rgb)
+            obs[self.cfg.exterior_image_1_left_key] = self._left_camera.get_rgb()
+                
+        if self._front_camera is not None:
+            obs[self.cfg.exterior_image_2_left_key] = self._front_camera.get_rgb()
+                
+        if self._overhead_camera is not None:
+            obs[self.cfg.exterior_image_3_left_key] = self._overhead_camera.get_rgb()
+                
+        if self._right_camera is not None:
+            obs[self.cfg.exterior_image_4_left_key] = self._right_camera.get_rgb()
         
         # Maintain backward compatibility for robot 0
         obs["joint_position"] = obs.get("robot0_joint_position")
@@ -414,17 +502,6 @@ class XArmIsaacEnvironment(_environment.Environment):
     @staticmethod
     def _join_assets_path(assets_root: str, relative_path: str) -> str:
         return f"{assets_root.rstrip('/')}/{relative_path.lstrip('/')}"
-
-    @staticmethod
-    def _as_uint8(image: np.ndarray) -> np.ndarray:
-        array = np.asarray(image)
-        if array.dtype == np.uint8:
-            return array
-        if np.issubdtype(array.dtype, np.floating):
-            max_val = float(np.nanmax(array)) if array.size else 1.0
-            if max_val <= 1.0:
-                array = array * 255.0
-        return np.clip(array, 0, 255).astype(np.uint8)
 
     @staticmethod
     def _euler_xyz_to_quat(euler: np.ndarray) -> np.ndarray:
@@ -528,6 +605,46 @@ class XArmIsaacEnvironment(_environment.Environment):
             return np.zeros(6, dtype=np.float64)
         euler = self._quat_wxyz_to_euler_xyz(orientation[:4])
         return np.concatenate([position[:3], euler]).astype(np.float64)
+
+
+
+    def _compute_look_at_orientation(self, eye: np.ndarray, target: np.ndarray, up: np.ndarray = np.array([0.0, 0.0, 1.0])) -> np.ndarray:
+        """Computes the quaternion (w, x, y, z) for a camera using scipy."""
+        # Camera convention: -Z is forward, +Y is up, +X is right
+        
+        eye = np.asarray(eye, dtype=np.float64)
+        target = np.asarray(target, dtype=np.float64)
+        up = np.asarray(up, dtype=np.float64)
+        
+        # Forward vector (from eye to target)
+        forward = target - eye
+        forward /= np.linalg.norm(forward)
+        
+        # Camera Z axis points backwards (opposite to forward)
+        z_axis = -forward
+        
+        # Camera X axis
+        x_axis = np.cross(up, z_axis)
+        if np.linalg.norm(x_axis) < 1e-6:
+             # Handle degenerate case where up is parallel to z_axis
+             # Just pick an arbitrary axis, e.g. X
+             x_axis = np.cross(np.array([1.0, 0.0, 0.0]), z_axis)
+             
+        x_axis /= np.linalg.norm(x_axis)
+        
+        # Camera Y axis
+        y_axis = np.cross(z_axis, x_axis)
+        
+        # Rotation matrix [R_col1, R_col2, R_col3]
+        rot_mat = np.column_stack([x_axis, y_axis, z_axis])
+        
+        # Convert to quaternion (x, y, z, w)
+        quat_xyzw = R.from_matrix(rot_mat).as_quat()
+        
+        # print(f"DEBUG_MATH: Eye={eye} Target={target} Fwd={forward} Quat={quat_xyzw}")
+        
+        # Return (w, x, y, z)
+        return np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float64)
 
     @staticmethod
     def _quat_wxyz_to_euler_xyz(quat: np.ndarray) -> np.ndarray:
