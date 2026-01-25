@@ -75,9 +75,15 @@ def main() -> None:
     if args.random:
         logging.info("Using OscillatingPolicy")
         policy = OscillatingPolicy(num_robots=2)
+        policies = None
     else:
-        logging.info(f"Connecting to policy server at {args.host}:{args.port}")
-        policy = _websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port)
+        logging.info(f"Connecting to policy servers at {args.host}:{args.port}")
+        # Create separate policy clients for each robot
+        policies = [
+            _websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port),
+            _websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port)
+        ]
+        policy = None
 
     if not args.headless:
         # Create a single window for both cameras
@@ -160,11 +166,25 @@ def main() -> None:
             else:
                 if actions_from_chunk_completed == 0 or actions_from_chunk_completed >= args.horizon:
                     actions_from_chunk_completed = 0
-                    request = _build_policy_observation(obs, args.prompt)
-                    # this usually returns action chunk [horizon, action_dim]
-                    pred_action_chunk = np.asarray(policy.infer(request)["actions"])
+                    
+                    # Query Robot 0 policy
+                    request_robot0 = _build_policy_observation_for_robot(obs, args.prompt, robot_id=0)
+                    logging.debug(f"Robot 0 obs - joints: {request_robot0['observation/joint_position'][:3] if request_robot0.get('observation/joint_position') is not None else 'None'}...")
+                    robot0_action_chunk = np.asarray(policies[0].infer(request_robot0)["actions"])
+                    logging.debug(f"Robot 0 received action chunk shape: {robot0_action_chunk.shape}")
+                    
+                    # Query Robot 1 policy (completely separate)
+                    request_robot1 = _build_policy_observation_for_robot(obs, args.prompt, robot_id=1)
+                    logging.debug(f"Robot 1 obs - joints: {request_robot1['observation/joint_position'][:3] if request_robot1.get('observation/joint_position') is not None else 'None'}...")
+                    robot1_action_chunk = np.asarray(policies[1].infer(request_robot1)["actions"])
+                    logging.debug(f"Robot 1 received action chunk shape: {robot1_action_chunk.shape}")
                 
-                action = pred_action_chunk[actions_from_chunk_completed]
+                # Extract current action for each robot from their separate chunks
+                robot0_action = robot0_action_chunk[actions_from_chunk_completed]
+                robot1_action = robot1_action_chunk[actions_from_chunk_completed]
+                action = [robot0_action, robot1_action]
+                
+                logging.debug(f"Applying actions - Robot0 shape: {robot0_action.shape}, Robot1 shape: {robot1_action.shape}")
                 actions_from_chunk_completed += 1
 
             env.apply_action({"actions": action})
@@ -180,6 +200,7 @@ def main() -> None:
 
 
 def _build_policy_observation(obs: dict, prompt: str) -> dict:
+    """Build observation dict with data from both robots (for random policy)."""
     return {
         "observation/robot0_wrist_image_left": obs.get("robot0_wrist_image_left"),
         "observation/robot1_wrist_image_left": obs.get("robot1_wrist_image_left"),
@@ -195,6 +216,20 @@ def _build_policy_observation(obs: dict, prompt: str) -> dict:
         "observation/wrist_image_left": obs.get("wrist_image_left"),
         "observation/joint_position": obs.get("joint_position"),
         "observation/gripper_position": obs.get("gripper_position"),
+        "prompt": prompt,
+    }
+
+
+def _build_policy_observation_for_robot(obs: dict, prompt: str, robot_id: int) -> dict:
+    """Build observation dict for a specific robot (for websocket policy clients)."""
+    return {
+        "observation/wrist_image_left": obs.get(f"robot{robot_id}_wrist_image_left"),
+        "observation/joint_position": obs.get(f"robot{robot_id}_joint_position"),
+        "observation/gripper_position": obs.get(f"robot{robot_id}_gripper_position"),
+        "observation/exterior_image_1_left": obs.get("exterior_image_1_left"),
+        "observation/exterior_image_2_left": obs.get("exterior_image_2_left"),
+        "observation/exterior_image_3_left": obs.get("exterior_image_3_left"),
+        "observation/exterior_image_4_left": obs.get("exterior_image_4_left"),
         "prompt": prompt,
     }
 

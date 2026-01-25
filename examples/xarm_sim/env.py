@@ -365,10 +365,12 @@ class XArmIsaacEnvironment(_environment.Environment):
         else:
             actions = [np.asarray(targets_list, dtype=np.float64).flatten()]
 
+        logging.debug(f"Applying actions to {len(actions)} robots")
         for i, (xarm, robot_action) in enumerate(zip(self._xarms, actions)):
             if i >= len(self._xarms):
                 break
-                
+            
+            logging.debug(f"Robot {i} receiving action shape: {robot_action.shape}, values: {robot_action[:3]}...")
             self._last_actions[i] = robot_action
 
             # Get current state for integration
